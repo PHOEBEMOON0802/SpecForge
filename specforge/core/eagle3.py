@@ -155,7 +155,7 @@ class OnlineEagle3Model(Eagle3Model):
         # Step 1: handle vocab size
         target_p_padded, position_mask = _compute_target_p_padded(
             target=target,
-            t2d=self.draft_model.t2d,
+            t2d=getattr(self.draft_model, "t2d", None),
             loss_mask=loss_mask,
             length=self.length,
         )
@@ -441,7 +441,7 @@ class QwenVLOnlineEagle3Model(Eagle3Model):
         # Step 1: handle vocab size
         target_p_padded, position_mask = _compute_target_p_padded(
             target=target,
-            t2d=self.draft_model.t2d,
+            t2d=getattr(self.draft_model, "t2d", None),
             loss_mask=loss_mask,
             length=self.length,
         )
@@ -567,11 +567,17 @@ class QwenVLOnlineEagle3Model(Eagle3Model):
 
 def _compute_target_p_padded(target, t2d, loss_mask, length):
     with torch.no_grad():
-        target_p, position_mask = _compute_target_p(
-            target=target,
-            t2d=t2d,
-            loss_mask=loss_mask,
-        )
+        if t2d is None:
+            target_p, position_mask = _compute_target_p_full_vocab(
+                target=target,
+                loss_mask=loss_mask,
+            )
+        else:
+            target_p, position_mask = _compute_target_p(
+                target=target,
+                t2d=t2d,
+                loss_mask=loss_mask,
+            )
 
         assert len(target_p.shape) == 3
         target_p_padded = F.pad(
@@ -594,6 +600,15 @@ def _compute_target_p(target, t2d, loss_mask):
     position_mask = target_mask * loss_mask
     target_head = target_head[..., t2d]
     target_head = target_head.float()
+    target_p = nn.Softmax(dim=2)(target_head)
+    target_p = target_p.detach()
+    return target_p, position_mask
+
+
+@torch.compile(dynamic=None)
+def _compute_target_p_full_vocab(target, loss_mask):
+    target_head = target.float()
+    position_mask = loss_mask.int()
     target_p = nn.Softmax(dim=2)(target_head)
     target_p = target_p.detach()
     return target_p, position_mask

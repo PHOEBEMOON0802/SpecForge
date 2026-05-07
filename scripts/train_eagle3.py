@@ -96,6 +96,11 @@ def parse_args() -> Tuple[ArgumentParser, Namespace]:
         choices=["sglang", "hf", "custom"],
         help="The backend of the target model",
     )
+    model_group.add_argument(
+        "--disable-vocab-mapping",
+        action="store_true",
+        help="Disable draft vocab compression and train with an identity vocab mapping.",
+    )
 
     # dataset arguments
     dataset_group = parser.add_argument_group("dataset")
@@ -374,7 +379,9 @@ def build_draft_model(args: Namespace) -> Tuple[AutoDraftModelConfig, nn.Module]
     if args.draft_model_config is None:
         # Auto-generate and save config file
         auto_config_path = create_draft_config_from_target(
-            target_model_path=args.target_model_path, cache_dir=args.model_download_dir
+            target_model_path=args.target_model_path,
+            cache_dir=args.model_download_dir,
+            use_vocab_mapping=not args.disable_vocab_mapping,
         )
         draft_model_config = AutoDraftModelConfig.from_file(auto_config_path)
     else:
@@ -402,6 +409,20 @@ def build_draft_model(args: Namespace) -> Tuple[AutoDraftModelConfig, nn.Module]
         draft_model_last_checkpoint, ckpt_info = get_last_checkpoint(args.output_dir)
         print(f"Last checkpoint detected: {draft_model_last_checkpoint}")
         is_resume_checkpoint = True
+
+    if args.disable_vocab_mapping:
+        if (
+            draft_model_last_checkpoint
+            and draft_model_config.draft_vocab_size != draft_model_config.vocab_size
+        ):
+            raise ValueError(
+                "Cannot disable vocab mapping when loading a checkpoint trained "
+                "with a reduced draft vocabulary."
+            )
+        draft_model_config.draft_vocab_size = draft_model_config.vocab_size
+        print_on_rank0(
+            "Vocab mapping disabled. Using full target vocabulary for the draft model."
+        )
 
     if draft_model_last_checkpoint:
         draft_model = AutoEagle3DraftModel.from_pretrained(
@@ -475,13 +496,16 @@ def build_dataloaders(
             num_proc=args.build_dataset_num_proc,
             train_only_last_turn=args.train_only_last_turn,
         )
-        vocab_mapping_path = generate_vocab_mapping_file(
-            dataset=train_eagle3_dataset,
-            target_vocab_size=draft_model_config.vocab_size,
-            draft_vocab_size=draft_model_config.draft_vocab_size,
-            cache_dir=os.path.join(args.cache_dir, "vocab_mapping"),
-            cache_key=cache_key,
-        )
+        if args.disable_vocab_mapping:
+            vocab_mapping_path = None
+        else:
+            vocab_mapping_path = generate_vocab_mapping_file(
+                dataset=train_eagle3_dataset,
+                target_vocab_size=draft_model_config.vocab_size,
+                draft_vocab_size=draft_model_config.draft_vocab_size,
+                cache_dir=os.path.join(args.cache_dir, "vocab_mapping"),
+                cache_key=cache_key,
+            )
 
         if not is_online:
             train_eagle3_dataset = build_offline_eagle3_dataset(
@@ -758,9 +782,11 @@ def main():
         args, draft_model_config, processor
     )
 
-    # we load the vocab mapping then
-    draft_model.load_vocab_mapping(vocab_mapping_path)
-    print_with_rank("Loaded vocab mapping")
+    if vocab_mapping_path is not None:
+        draft_model.load_vocab_mapping(vocab_mapping_path)
+        print_with_rank("Loaded vocab mapping")
+    else:
+        print_with_rank("Vocab mapping disabled; using full target vocabulary.")
 
     # Calculate total steps if not provided
     if args.total_steps is None:

@@ -119,7 +119,10 @@ def get_last_checkpoint(folder, prefix="epoch"):
 
 
 def generate_draft_model_config(
-    target_model_path: str, template_config_path: str = None, cache_dir: str = None
+    target_model_path: str,
+    template_config_path: str = None,
+    cache_dir: str = None,
+    use_vocab_mapping: bool = True,
 ):
     """
     Auto-generate draft model config based on target model parameters aligned with template config
@@ -187,8 +190,12 @@ def generate_draft_model_config(
     draft_config["tie_word_embeddings"] = False
     draft_config["use_cache"] = True
 
+    # If vocab mapping is disabled, align the draft vocabulary with the target
+    # vocabulary so the existing training path can use an identity mapping.
+    if not use_vocab_mapping:
+        draft_config["draft_vocab_size"] = draft_config["vocab_size"]
     # If template doesn't have draft_vocab_size, set default
-    if "draft_vocab_size" not in draft_config:
+    elif "draft_vocab_size" not in draft_config:
         draft_config["draft_vocab_size"] = 32000  # Default value
 
     return draft_config
@@ -215,6 +222,7 @@ def create_draft_config_from_target(
     output_dir: str = None,
     template_config_path: str = None,
     cache_dir: str = None,
+    use_vocab_mapping: bool = True,
 ):
     """
     Convenient function to create draft model config file from target model
@@ -236,7 +244,10 @@ def create_draft_config_from_target(
             "No draft model config provided, auto-generating from target model..."
         )
         config_dict = generate_draft_model_config(
-            target_model_path, template_config_path, cache_dir
+            target_model_path,
+            template_config_path,
+            cache_dir,
+            use_vocab_mapping=use_vocab_mapping,
         )
     dist.barrier()
 
