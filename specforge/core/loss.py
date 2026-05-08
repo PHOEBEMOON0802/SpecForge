@@ -17,7 +17,9 @@ def _compute_loss(logits, target_p, position_mask):
     logits = logits.float()
     out_logp = nn.LogSoftmax(dim=2)(logits)
     plogp = target_p * out_logp
-    loss = -torch.sum(position_mask * plogp, 2).mean()
+    loss = -torch.sum(position_mask * plogp, 2).sum()
+    denom = position_mask.sum().clamp_min(1).to(loss.dtype)
+    loss = loss / denom
     return loss
 
 
@@ -178,6 +180,7 @@ class LogSoftmaxLoss(torch.autograd.Function):
         logits_flat = logits.contiguous().view(B * T, V)
         target_flat = target.contiguous().view(B * T, V)
         position_mask_flat = position_mask.contiguous().view(B * T, 1).bool()
+        valid_count = max(int(position_mask_flat.sum().item()), 1)
         grid = (B * T,)
         m = torch.zeros((B * T,), device=logits.device, dtype=torch.float32)
         d = torch.zeros((B * T,), device=logits.device, dtype=torch.float32)
@@ -197,14 +200,15 @@ class LogSoftmaxLoss(torch.autograd.Function):
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=num_warps,
         )
+        ctx.valid_count = valid_count
         ctx.save_for_backward(logits.detach(), target, position_mask, m, d)
-        return loss.squeeze(1).mean()
+        return loss.sum() / valid_count
 
     @staticmethod
     def backward(ctx, grad_output):
         logits, target, position_mask, m, d = ctx.saved_tensors
         B, T, V = logits.shape
-        scaling_factor = 1.0 / (B * T)
+        scaling_factor = 1.0 / ctx.valid_count
         logits = logits.contiguous().view(B * T, V)
         target = target.contiguous().view(B * T, V)
         position_mask = position_mask.contiguous().view(B * T, 1).bool()

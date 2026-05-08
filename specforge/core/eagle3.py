@@ -93,7 +93,8 @@ class OnlineEagle3Model(Eagle3Model):
             acc = local_correct / local_denom
 
         loss = LogSoftmaxLoss.apply(logits, target_p, position_mask)
-        loss = adapter.reduce_loss(loss)
+        valid_count = position_mask.sum().to(loss.dtype).clamp_min(1.0)
+        loss = adapter.reduce_loss(loss, valid_count)
         return acc, loss
 
     def _prepare_position_ids(

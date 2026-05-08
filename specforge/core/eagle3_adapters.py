@@ -46,7 +46,9 @@ class BackendAdapter:
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         return local_correct, local_denom
 
-    def reduce_loss(self, loss: torch.Tensor) -> torch.Tensor:
+    def reduce_loss(
+        self, loss: torch.Tensor, valid_count: torch.Tensor
+    ) -> torch.Tensor:
         return loss
 
 
@@ -127,7 +129,13 @@ class UspAdapter(BackendAdapter):
         )
         return local_correct, local_denom
 
-    def reduce_loss(self, loss: torch.Tensor) -> torch.Tensor:
-        loss = dist_nn.all_reduce(loss, op=dist.ReduceOp.SUM, group=self.sp_group)
-        loss = loss / self.sp_world_size
-        return loss
+    def reduce_loss(
+        self, loss: torch.Tensor, valid_count: torch.Tensor
+    ) -> torch.Tensor:
+        weighted_loss = dist_nn.all_reduce(
+            loss * valid_count, op=dist.ReduceOp.SUM, group=self.sp_group
+        )
+        global_count = dist_nn.all_reduce(
+            valid_count, op=dist.ReduceOp.SUM, group=self.sp_group
+        )
+        return weighted_loss / global_count.clamp_min(1e-6)
